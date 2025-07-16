@@ -3,8 +3,6 @@ import os
 import gradio as gr
 import tempfile
 from vinorm import TTSnorm
-
-from f5_tts.model import DiT
 from f5_tts.infer.utils_infer import (
     preprocess_ref_audio_text,
     load_vocoder,
@@ -13,7 +11,11 @@ from f5_tts.infer.utils_infer import (
     save_spectrogram,
     parse_silence_tokens,
     apply_silence_to_audio,
+    replace_silence_with_placeholders,
+    restore_silence_from_placeholders,
+    chunk_text,
 )
+from f5_tts.model import DiT
 
 # Retrieve token from secrets
 
@@ -79,45 +81,30 @@ model = load_model(
 
 @spaces.GPU
 def infer_tts(ref_audio_orig: str, gen_text: str, speed: float = 1.0, request: gr.Request = None):
-
     if not ref_audio_orig:
         raise gr.Error("Please upload a sample audio file.")
     if not gen_text.strip():
         raise gr.Error("Please enter the text content to generate voice.")
     if len(gen_text.split()) > 1000:
         raise gr.Error("Please enter text content with less than 1000 words.")
-    
     try:
         ref_audio, ref_text = preprocess_ref_audio_text(ref_audio_orig, "")
-        
-        # Parse silence tokens first, then apply TTSnorm to cleaned text
-        cleaned_text, silence_segments = parse_silence_tokens(gen_text)
-        
-        # Apply TTSnorm and post_process only to cleaned text (without silence tokens)
-        processed_text = post_process(TTSnorm(cleaned_text)).lower()
-        
-        # Calculate adjusted positions for silence tokens after text processing
-        adjusted_segments = calculate_relative_positions(cleaned_text, processed_text, silence_segments)
-        
-        # Reconstruct text with silence tokens for infer_process
-        final_text = processed_text
-        if adjusted_segments:
-            # Sort segments by position (descending to maintain positions when inserting)
-            sorted_segments = sorted(adjusted_segments, key=lambda x: x[0], reverse=True)
-            for pos, duration in sorted_segments:
-                # Ensure position is within bounds
-                relative_pos = min(pos, len(final_text))
-                silence_token = f" <<<sil#{duration}>>> "
-                final_text = final_text[:relative_pos] + silence_token + final_text[relative_pos:]
-        
+        # 1. Thay silent token bằng placeholder
+        text_with_ph, silences, placeholders = replace_silence_with_placeholders(gen_text)
+        # 2. Chuẩn hóa text (vinorm, post_process) trên text_with_ph
+        processed_text = post_process(TTSnorm(text_with_ph)).lower()
+        # 3. Chia batch trên processed_text (vẫn còn placeholder)
+        batches = chunk_text(processed_text)
+        # 4. Với mỗi batch, khôi phục lại silent token từ placeholder
+        batches_with_silence = [restore_silence_from_placeholders(batch, silences, placeholders) for batch in batches]
+        # 5. Gộp lại thành text cuối cùng để truyền vào infer_process
+        final_text = ' '.join(batches_with_silence)
         final_wave, final_sample_rate, spectrogram = infer_process(
             ref_audio, ref_text.lower(), final_text, model, vocoder, speed=speed
         )
-        
         with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp_spectrogram:
             spectrogram_path = tmp_spectrogram.name
             save_spectrogram(spectrogram, spectrogram_path)
-
         return (final_sample_rate, final_wave), spectrogram_path
     except Exception as e:
         raise gr.Error(f"Error generating voice: {e}")

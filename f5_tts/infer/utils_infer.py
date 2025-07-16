@@ -234,42 +234,31 @@ def insert_silence_in_audio(audio_segments, silence_segments, sample_rate=24000)
 
 
 def chunk_text(text, max_chars=135):
-    sentences = [s.strip() for s in text.split('. ') if s.strip()]
+    """
+    Chia text thành các đoạn nhỏ, đảm bảo không cắt giữa placeholder __SILn__
+    """
+    import re
+    # Tách theo dấu chấm, nhưng giữ placeholder nguyên vẹn
+    sil_pattern = r'__SIL\d+__'
+    # Tìm vị trí các placeholder
+    sil_matches = list(re.finditer(sil_pattern, text))
+    sil_pos = [m.start() for m in sil_matches]
+    
+    # Tách text thành các đoạn, mỗi đoạn không vượt quá max_chars, không cắt giữa placeholder
+    chunks = []
     i = 0
-    while i < len(sentences):
-        if len(sentences[i].split()) < 4:
-            if i == 0:
-                # Merge with the next sentence
-                sentences[i + 1] = sentences[i] + ', ' + sentences[i + 1]
-                del sentences[i]
-            else:
-                # Merge with the previous sentence
-                sentences[i - 1] = sentences[i - 1] + ', ' + sentences[i]
-                del sentences[i]
-                i -= 1
-        else:
-            i += 1
-
-    final_sentences = []
-    for sentence in sentences:
-        parts = [p.strip() for p in sentence.split(', ')]
-        buffer = []
-        for part in parts:
-            buffer.append(part)
-            total_words = sum(len(p.split()) for p in buffer)
-            if total_words > 20:
-                # Split into separate chunks
-                long_part = ', '.join(buffer)
-                final_sentences.append(long_part)
-                buffer = []
-        if buffer:
-            final_sentences.append(', '.join(buffer))
-
-    if len(final_sentences[-1].split()) < 4 and len(final_sentences) >= 2:
-        final_sentences[-2] = final_sentences[-2] + ", " + final_sentences[-1]
-        final_sentences = final_sentences[0:-1]
-
-    return final_sentences
+    while i < len(text):
+        end = min(i + max_chars, len(text))
+        # Nếu end nằm giữa placeholder thì lùi lại trước placeholder
+        for pos in sil_pos:
+            if i < pos < end:
+                end = pos
+                break
+        chunk = text[i:end].strip()
+        if chunk:
+            chunks.append(chunk)
+        i = end
+    return chunks
 
 
 # load vocoder
