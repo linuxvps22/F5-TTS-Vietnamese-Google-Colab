@@ -120,7 +120,7 @@ with gr.Blocks(theme=gr.themes.Soft()) as demo:
         ref_audio = gr.Audio(label="🔊 Sample Voice", type="filepath")
         gen_text = gr.Textbox(label="📝 Text", placeholder="Enter the text to generate voice...", lines=3)
     
-    ref_text = gr.Textbox(label="📝 Reference Text (optional)", placeholder="If provided, will be used as reference text instead of ASR.", lines=2, optional=True)
+    ref_text = gr.Textbox(label="📝 Reference Text (optional)", placeholder="If provided, will be used as reference text instead of ASR.", lines=2)
 
     speed = gr.Slider(0.3, 2.0, value=1.0, step=0.1, label="⚡ Speed")
     btn_synthesize = gr.Button("🔥 Generate Voice")
