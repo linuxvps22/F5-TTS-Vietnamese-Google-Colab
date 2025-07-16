@@ -1,4 +1,4 @@
-# Ổn rồi hahaaha
+# Đã chạy thử, # Ổn rồi hahaaha, đã việt hóa giao diện, giờ thì lấy đây làm checkpoint, bắt đầu chỉnh sửa sâu từ sau lần này
 import spaces
 import os
 import gradio as gr
