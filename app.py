@@ -2,9 +2,7 @@
 import spaces
 import os
 import gradio as gr
-from cached_path import cached_path
 import tempfile
-from vinorm import TTSnorm
 
 from f5_tts.model import DiT
 from f5_tts.infer.utils_infer import (
@@ -15,7 +13,6 @@ from f5_tts.infer.utils_infer import (
     save_spectrogram,
     chunk_text,
     process_text_chunks,
-    SilenceToken,
 )
 
 def post_process(text):
@@ -72,16 +69,17 @@ model = load_model(
 )
 
 @spaces.GPU
-def infer_tts(ref_audio_orig: str, gen_text: str, speed: float = 1.0, request: gr.Request = None):
+def infer_tts(ref_audio_orig: str, gen_text: str, ref_text: str = "", speed: float = 1.0, request: gr.Request = None):
     if not ref_audio_orig:
         raise gr.Error("Please upload a sample audio file.")
     if not gen_text.strip():
         raise gr.Error("Please enter the text content to generate voice.")
-    if len(gen_text.split()) > 1000:
-        raise gr.Error("Please enter text content with less than 1000 words.")
-    
+    if len(gen_text.split()) > 100000:
+        raise gr.Error("Please enter text content with less than 100000 words.")
+
     try:
         print(f"Original text: {gen_text}")
+        print(f"Reference text: {ref_text}")
         
         # Post-process the text
         processed_text = post_process(gen_text)
@@ -95,10 +93,10 @@ def infer_tts(ref_audio_orig: str, gen_text: str, speed: float = 1.0, request: g
         final_chunks = process_text_chunks(processed_text_chunks)
         print(f"Final chunks: {final_chunks}")
         
-        ref_audio, ref_text = preprocess_ref_audio_text(ref_audio_orig, "")
+        ref_audio, ref_text_final = preprocess_ref_audio_text(ref_audio_orig, ref_text)
         
         final_wave, final_sample_rate, spectrogram = infer_process(
-            ref_audio, ref_text.lower(), final_chunks, model, vocoder, speed=speed
+            ref_audio, ref_text_final.lower(), final_chunks, model, vocoder, speed=speed
         )
         
         with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp_spectrogram:
@@ -122,9 +120,11 @@ with gr.Blocks(theme=gr.themes.Soft()) as demo:
         ref_audio = gr.Audio(label="🔊 Sample Voice", type="filepath")
         gen_text = gr.Textbox(label="📝 Text", placeholder="Enter the text to generate voice...", lines=3)
     
+    ref_text = gr.Textbox(label="📝 Reference Text (optional)", placeholder="If provided, will be used as reference text instead of ASR.", lines=2, optional=True)
+
     speed = gr.Slider(0.3, 2.0, value=1.0, step=0.1, label="⚡ Speed")
     btn_synthesize = gr.Button("🔥 Generate Voice")
-    
+
     with gr.Row():
         output_audio = gr.Audio(label="🎧 Generated Audio", type="numpy")
         output_spectrogram = gr.Image(label="📊 Spectrogram")
@@ -139,7 +139,7 @@ with gr.Blocks(theme=gr.themes.Soft()) as demo:
         interactive=False
     )
 
-    btn_synthesize.click(infer_tts, inputs=[ref_audio, gen_text, speed], outputs=[output_audio, output_spectrogram])
+    btn_synthesize.click(infer_tts, inputs=[ref_audio, gen_text, ref_text, speed], outputs=[output_audio, output_spectrogram])
 
 # Run Gradio with share=True to get a gradio.live link
 demo.queue().launch(share=True)
