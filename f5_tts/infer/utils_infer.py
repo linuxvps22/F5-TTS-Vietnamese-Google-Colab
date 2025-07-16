@@ -71,29 +71,53 @@ SilenceToken = namedtuple('SilenceToken', ['duration_ms'])
 
 
 def chunk_text(text, max_chars=135):
-    # Nhận diện và tách các cụm silence
-    silence_pattern = r' (?:::sil#(\d{1,5}):::) '
+    """
+    Enhanced chunk_text function to properly handle silence syntax
+    """
+    # Pattern to match silence syntax with flexible spacing
+    silence_pattern = r'\s*<<<\s*sil#(\d{1,5})\s*>>>\s*'
     result = []
     pos = 0
+    
     for m in re.finditer(silence_pattern, text):
+        # Get text before silence token
         before = text[pos:m.start()]
         if before.strip():
+            # Split the text before silence into sentences
             result.extend(_split_sentences(before, max_chars))
+        
+        # Process silence duration
         ms = int(m.group(1))
+        # Round to nearest 100ms and clamp to valid range
         ms = max(100, min(20000, int(round(ms / 100.0) * 100)))
         result.append(SilenceToken(ms))
+        
         pos = m.end()
+    
+    # Process remaining text after last silence token
     after = text[pos:]
     if after.strip():
         result.extend(_split_sentences(after, max_chars))
+    
     return result
 
 
 def _split_sentences(text, max_chars):
+    """
+    Split text into sentences, ensuring no silence syntax is present
+    """
+    # First check if there's any silence syntax in the text
+    if '<<<sil#' in text and '>>>' in text:
+        # If there's silence syntax, we need to handle it properly
+        # This shouldn't happen if chunk_text works correctly, but as a safeguard
+        return [text.strip()] if text.strip() else []
+    
     sentence_endings = r'[.!?;]'
     text = re.sub(r'[\r\n]+', '. ', text)
     sentences = re.split(r'(?<=' + sentence_endings + r')\s+', text)
     sentences = [s.strip() for s in sentences if s.strip()]
+    
+    # Merge short sentences
     i = 0
     while i < len(sentences):
         if len(sentences[i].split()) < 4:
@@ -108,6 +132,8 @@ def _split_sentences(text, max_chars):
                 i += 1
         else:
             i += 1
+    
+    # Further split long sentences
     final_sentences = []
     for sentence in sentences:
         parts = [p.strip() for p in sentence.split(', ')]
@@ -121,9 +147,12 @@ def _split_sentences(text, max_chars):
                 buffer = []
         if buffer:
             final_sentences.append(', '.join(buffer))
+    
+    # Merge very short final sentence
     if len(final_sentences) >= 2 and len(final_sentences[-1].split()) < 4:
         final_sentences[-2] = final_sentences[-2] + ', ' + final_sentences[-1]
         final_sentences = final_sentences[0:-1]
+    
     return final_sentences
 
 
@@ -448,12 +477,27 @@ def infer_process(
 
 
 def process_text_chunks(chunks):
+    """
+    Process text chunks, applying TTSnorm only to actual text content,
+    not to silence tokens or chunks containing silence syntax
+    """
     processed = []
     for chunk in chunks:
         if isinstance(chunk, SilenceToken):
+            # Keep silence tokens as-is
             processed.append(chunk)
+        elif isinstance(chunk, str):
+            # Check if this chunk contains silence syntax
+            if '<<<sil#' in chunk and '>>>' in chunk:
+                # This chunk contains silence syntax, skip TTSnorm
+                # The chunk_text function should have already handled this properly
+                continue
+            else:
+                # Normal text chunk, apply TTSnorm
+                processed.append(TTSnorm(chunk))
         else:
-            processed.append(TTSnorm(chunk))
+            # Fallback for other types
+            processed.append(chunk)
     return processed
 
 

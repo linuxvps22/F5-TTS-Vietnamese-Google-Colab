@@ -18,17 +18,44 @@ from f5_tts.infer.utils_infer import (
 )
 
 def post_process(text):
-    text = " " + text + " "
-    text = text.replace(" . . ", " . ")
-    text = " " + text + " "
-    text = text.replace(" .. ", " . ")
-    text = " " + text + " "
-    text = text.replace(" , , ", " , ")
-    text = " " + text + " "
-    text = text.replace(" ,, ", " , ")
-    text = " " + text + " "
-    text = text.replace('"', "")
-    return " ".join(text.split())
+    """
+    Post-process text while preserving silence syntax
+    """
+    # First, temporarily replace silence tokens with placeholders
+    import re
+    silence_pattern = r'\s*<<<\s*sil#(\d{1,5})\s*>>>\s*'
+    silence_tokens = []
+    
+    def replace_silence(match):
+        ms = int(match.group(1))
+        # Round to nearest 100ms and clamp to valid range
+        ms = max(100, min(20000, int(round(ms / 100.0) * 100)))
+        placeholder = f"__SILENCE_TOKEN_{len(silence_tokens)}__"
+        silence_tokens.append(f" <<<sil#{ms}>>> ")
+        return placeholder
+    
+    # Replace silence tokens with placeholders
+    text_with_placeholders = re.sub(silence_pattern, replace_silence, text)
+    
+    # Apply normal post-processing to the text without silence tokens
+    text_processed = " " + text_with_placeholders + " "
+    text_processed = text_processed.replace(" . . ", " . ")
+    text_processed = " " + text_processed + " "
+    text_processed = text_processed.replace(" .. ", " . ")
+    text_processed = " " + text_processed + " "
+    text_processed = text_processed.replace(" , , ", " , ")
+    text_processed = " " + text_processed + " "
+    text_processed = text_processed.replace(" ,, ", " , ")
+    text_processed = " " + text_processed + " "
+    text_processed = text_processed.replace('"', "")
+    text_processed = " ".join(text_processed.split())
+    
+    # Restore silence tokens
+    for i, silence_token in enumerate(silence_tokens):
+        placeholder = f"__SILENCE_TOKEN_{i}__"
+        text_processed = text_processed.replace(placeholder, silence_token)
+    
+    return text_processed
 
 # Load models from local checkpoint
 model_dir = os.path.join(os.path.dirname(__file__), "F5-TTS-Vietnamese-ViVoice")
@@ -51,17 +78,34 @@ def infer_tts(ref_audio_orig: str, gen_text: str, speed: float = 1.0, request: g
         raise gr.Error("Please enter the text content to generate voice.")
     if len(gen_text.split()) > 1000:
         raise gr.Error("Please enter text content with less than 1000 words.")
+    
     try:
+        print(f"Original text: {gen_text}")
+        
+        # Post-process the text
+        processed_text = post_process(gen_text)
+        print(f"Post-processed text: {processed_text}")
+        
+        # Chunk the text
+        processed_text_chunks = chunk_text(processed_text)
+        print(f"Chunked text: {processed_text_chunks}")
+        
+        # Process chunks (apply TTSnorm to non-silence chunks)
+        final_chunks = process_text_chunks(processed_text_chunks)
+        print(f"Final chunks: {final_chunks}")
+        
         ref_audio, ref_text = preprocess_ref_audio_text(ref_audio_orig, "")
-        processed_text_chunks = chunk_text(post_process(gen_text))
-        processed_text_chunks = process_text_chunks(processed_text_chunks)
+        
         final_wave, final_sample_rate, spectrogram = infer_process(
-            ref_audio, ref_text.lower(), processed_text_chunks, model, vocoder, speed=speed
+            ref_audio, ref_text.lower(), final_chunks, model, vocoder, speed=speed
         )
+        
         with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp_spectrogram:
             spectrogram_path = tmp_spectrogram.name
             save_spectrogram(spectrogram, spectrogram_path)
+        
         return (final_sample_rate, final_wave), spectrogram_path
+        
     except Exception as e:
         raise gr.Error(f"Error generating voice: {e}")
 
