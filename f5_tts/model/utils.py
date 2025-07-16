@@ -109,7 +109,7 @@ def get_tokenizer(dataset_name, tokenizer: str = "pinyin"):
                 - if use "byte", set to 256 (unicode byte range)
     """
     if tokenizer in ["pinyin", "char"]:
-        tokenizer_path = os.path.join(files("f5_tts").joinpath("../../data"), f"{dataset_name}/vocab.txt")
+        tokenizer_path = os.path.join(files("f5_tts").joinpath("../../data"), f"{dataset_name}_{tokenizer}/vocab.txt")
         with open(tokenizer_path, "r", encoding="utf-8") as f:
             vocab_char_map = {}
             for i, char in enumerate(f):
@@ -133,12 +133,22 @@ def get_tokenizer(dataset_name, tokenizer: str = "pinyin"):
 
 # convert char to pinyin
 
+jieba.initialize()
+print("Word segmentation module jieba initialized.\n")
+
+# def convert_char_to_pinyin(text_list, polyphone=True):
+#     final_text_list = []
+#     for text in text_list:
+#         char_list = [char for char in text if char not in "。，、；：？！《》【】—…:;\"()[]{}"]
+#         final_text_list.append(char_list)
+#     # print(final_text_list)
+#     return final_text_list
+
+# def convert_char_to_pinyin(text_list, polyphone=True):
+#     final_text_list = [char for char in text_list if char not in "。，、；：？！《》【】—…:;?!\"()[]{}"]
+#     return final_text_list
 
 def convert_char_to_pinyin(text_list, polyphone=True):
-    if jieba.dt.initialized is False:
-        jieba.default_logger.setLevel(50)  # CRITICAL
-        jieba.initialize()
-
     final_text_list = []
     custom_trans = str.maketrans(
         {";": ",", "“": '"', "”": '"', "‘": "'", "’": "'"}
@@ -174,12 +184,10 @@ def convert_char_to_pinyin(text_list, polyphone=True):
                     else:
                         char_list.append(c)
         final_text_list.append(char_list)
-
+    # print(final_text_list)
     return final_text_list
 
-
 # filter func for dirty data with many repetitions
-
 
 def repetition_found(text, length=2, tolerance=10):
     pattern_count = defaultdict(int)

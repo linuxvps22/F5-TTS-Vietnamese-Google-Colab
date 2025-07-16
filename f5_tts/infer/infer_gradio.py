@@ -41,12 +41,12 @@ from f5_tts.infer.utils_infer import (
 )
 
 
-DEFAULT_TTS_MODEL = "F5TTS_Base"
+DEFAULT_TTS_MODEL = "F5-TTS"
 tts_model_choice = DEFAULT_TTS_MODEL
 
 DEFAULT_TTS_MODEL_CFG = [
-    "F5-TTS-Vietnamese-ViVoice/model_last.pt",  # local checkpoint path
-    "F5-TTS-Vietnamese-ViVoice/vocab.txt",       # local vocab path
+    "hf://SWivid/F5-TTS/F5TTS_Base/model_1200000.safetensors",
+    "hf://SWivid/F5-TTS/F5TTS_Base/vocab.txt",
     json.dumps(dict(dim=1024, depth=22, heads=16, ff_mult=2, text_dim=512, conv_layers=4)),
 ]
 
@@ -56,23 +56,13 @@ DEFAULT_TTS_MODEL_CFG = [
 vocoder = load_vocoder()
 
 
-def load_f5tts():
-    # Resolve checkpoint and vocab paths (download if hf:// otherwise use local)
-    ckpt_path = DEFAULT_TTS_MODEL_CFG[0]
-    if ckpt_path.startswith("hf://"):
-        ckpt_path = str(cached_path(ckpt_path))
-
-    vocab_path = DEFAULT_TTS_MODEL_CFG[1]
-    if vocab_path.startswith("hf://"):
-        vocab_path = str(cached_path(vocab_path))
-
-    F5TTS_model_cfg = json.loads(DEFAULT_TTS_MODEL_CFG[2])
-    return load_model(DiT, F5TTS_model_cfg, ckpt_path, vocab_file=vocab_path)
+def load_f5tts(ckpt_path=str(cached_path("hf://SWivid/F5-TTS/F5TTS_Base/model_1200000.safetensors"))):
+    F5TTS_model_cfg = dict(dim=1024, depth=22, heads=16, ff_mult=2, text_dim=512, conv_layers=4)
+    return load_model(DiT, F5TTS_model_cfg, ckpt_path)
 
 
-def load_e2tts():
-    ckpt_path = str(cached_path("hf://SWivid/E2-TTS/E2TTS_Base/model_1200000.safetensors"))
-    E2TTS_model_cfg = dict(dim=1024, depth=24, heads=16, ff_mult=4, text_mask_padding=False, pe_attn_head=1)
+def load_e2tts(ckpt_path=str(cached_path("hf://SWivid/E2-TTS/E2TTS_Base/model_1200000.safetensors"))):
+    E2TTS_model_cfg = dict(dim=1024, depth=24, heads=16, ff_mult=4)
     return load_model(UNetT, E2TTS_model_cfg, ckpt_path)
 
 
@@ -83,7 +73,7 @@ def load_custom(ckpt_path: str, vocab_path="", model_cfg=None):
     if vocab_path.startswith("hf://"):
         vocab_path = str(cached_path(vocab_path))
     if model_cfg is None:
-        model_cfg = json.loads(DEFAULT_TTS_MODEL_CFG[2])
+        model_cfg = dict(dim=1024, depth=22, heads=16, ff_mult=2, text_dim=512, conv_layers=4)
     return load_model(DiT, model_cfg, ckpt_path, vocab_file=vocab_path)
 
 
@@ -140,7 +130,7 @@ def infer(
 
     ref_audio, ref_text = preprocess_ref_audio_text(ref_audio_orig, ref_text, show_info=show_info)
 
-    if model == DEFAULT_TTS_MODEL:
+    if model == "F5-TTS":
         ema_model = F5TTS_ema_model
     elif model == "E2-TTS":
         global E2TTS_ema_model
@@ -772,7 +762,7 @@ If you're having issues, try converting your reference audio to WAV or MP3, clip
 """
     )
 
-    last_used_custom = files("f5_tts").joinpath("infer/.cache/last_used_custom_model_info_v1.txt")
+    last_used_custom = files("f5_tts").joinpath("infer/.cache/last_used_custom_model_info.txt")
 
     def load_last_used_custom():
         try:
@@ -831,30 +821,7 @@ If you're having issues, try converting your reference audio to WAV or MP3, clip
         custom_model_cfg = gr.Dropdown(
             choices=[
                 DEFAULT_TTS_MODEL_CFG[2],
-                json.dumps(
-                    dict(
-                        dim=1024,
-                        depth=22,
-                        heads=16,
-                        ff_mult=2,
-                        text_dim=512,
-                        text_mask_padding=False,
-                        conv_layers=4,
-                        pe_attn_head=1,
-                    )
-                ),
-                json.dumps(
-                    dict(
-                        dim=768,
-                        depth=18,
-                        heads=12,
-                        ff_mult=2,
-                        text_dim=512,
-                        text_mask_padding=False,
-                        conv_layers=4,
-                        pe_attn_head=1,
-                    )
-                ),
+                json.dumps(dict(dim=768, depth=18, heads=12, ff_mult=2, text_dim=512, conv_layers=4)),
             ],
             value=load_last_used_custom()[2],
             allow_custom_value=True,
@@ -908,24 +875,10 @@ If you're having issues, try converting your reference audio to WAV or MP3, clip
     type=str,
     help='The root path (or "mount point") of the application, if it\'s not served from the root ("/") of the domain. Often used when the application is behind a reverse proxy that forwards requests to the application, e.g. set "/myapp" or full URL for application served at "https://example.com/myapp".',
 )
-@click.option(
-    "--inbrowser",
-    "-i",
-    is_flag=True,
-    default=False,
-    help="Automatically launch the interface in the default web browser",
-)
-def main(port, host, share, api, root_path, inbrowser):
+def main(port, host, share, api, root_path):
     global app
     print("Starting app...")
-    app.queue(api_open=api).launch(
-        server_name=host,
-        server_port=port,
-        share=share,
-        show_api=api,
-        root_path=root_path,
-        inbrowser=inbrowser,
-    )
+    app.queue(api_open=api).launch(server_name=host, server_port=port, share=share, show_api=api, root_path=root_path)
 
 
 if __name__ == "__main__":

@@ -173,7 +173,7 @@ class DynamicBatchSampler(Sampler[list[int]]):
     """
 
     def __init__(
-        self, sampler: Sampler[int], frames_threshold: int, max_samples=0, random_seed=None, drop_residual: bool = False
+        self, sampler: Sampler[int], frames_threshold: int, max_samples=0, random_seed=None, drop_last: bool = False
     ):
         self.sampler = sampler
         self.frames_threshold = frames_threshold
@@ -208,14 +208,11 @@ class DynamicBatchSampler(Sampler[list[int]]):
                     batch = []
                     batch_frames = 0
 
-        if not drop_residual and len(batch) > 0:
+        if not drop_last and len(batch) > 0:
             batches.append(batch)
 
         del indices
         self.batches = batches
-
-        # Ensure even batches with accelerate BatchSamplerShard cls under frame_per_batch setting
-        self.drop_last = True
 
     def set_epoch(self, epoch: int) -> None:
         """Sets the epoch for this sampler."""
@@ -256,7 +253,7 @@ def load_dataset(
     print("Loading dataset ...")
 
     if dataset_type == "CustomDataset":
-        rel_data_path = str(files("f5_tts").joinpath(f"../../data/{dataset_name}"))
+        rel_data_path = str(files("f5_tts").joinpath(f"../../data/{dataset_name}_{tokenizer}"))
         if audio_type == "raw":
             try:
                 train_dataset = load_from_disk(f"{rel_data_path}/raw")

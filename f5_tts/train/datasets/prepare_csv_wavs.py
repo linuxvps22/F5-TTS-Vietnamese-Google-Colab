@@ -24,7 +24,7 @@ from f5_tts.model.utils import (
 )
 
 
-PRETRAINED_VOCAB_PATH = files("f5_tts").joinpath("../../data/your_training_dataset/vocab.txt")
+PRETRAINED_VOCAB_PATH = files("f5_tts").joinpath("../../data/Emilia_ZH_EN_pinyin/vocab.txt")
 
 
 def is_csv_wavs_format(input_dataset_dir):
@@ -224,7 +224,7 @@ def save_prepped_dataset(out_dir, result, duration_list, text_vocab_set, is_fine
     voca_out_path = out_dir / "vocab.txt"
     if is_finetune:
         file_vocab_finetune = PRETRAINED_VOCAB_PATH.as_posix()
-        # shutil.copy2(file_vocab_finetune, voca_out_path) # Không cần copy lại vocab, do đã thực hiện ở bước chuẩn bị dữ liệu
+        shutil.copy2(file_vocab_finetune, voca_out_path)
     else:
         with open(voca_out_path.as_posix(), "w") as f:
             for vocab in sorted(text_vocab_set):

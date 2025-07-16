@@ -389,10 +389,10 @@ def run_sim(args):
         model = model.cuda(device)
     model.eval()
 
-    sim_results = []
-    for gen_wav, prompt_wav, truth in tqdm(test_set):
-        wav1, sr1 = torchaudio.load(gen_wav)
-        wav2, sr2 = torchaudio.load(prompt_wav)
+    sims = []
+    for wav1, wav2, truth in tqdm(test_set):
+        wav1, sr1 = torchaudio.load(wav1)
+        wav2, sr2 = torchaudio.load(wav2)
 
         resample1 = torchaudio.transforms.Resample(orig_freq=sr1, new_freq=16000)
         resample2 = torchaudio.transforms.Resample(orig_freq=sr2, new_freq=16000)
@@ -408,11 +408,6 @@ def run_sim(args):
 
         sim = F.cosine_similarity(emb1, emb2)[0].item()
         # print(f"VSim score between two audios: {sim:.4f} (-1.0, 1.0).")
-        sim_results.append(
-            {
-                "wav": Path(gen_wav).stem,
-                "sim": sim,
-            }
-        )
+        sims.append(sim)
 
-    return sim_results
+    return sims

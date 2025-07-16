@@ -206,14 +206,14 @@ def main():
 
 
 if __name__ == "__main__":
-    max_workers = 32
+    max_workers = 16
 
     tokenizer = "pinyin"  # "pinyin" | "char"
     polyphone = True
 
-    langs = ["ZH", "EN"]
-    dataset_dir = "<SOME_PATH>/Emilia_Dataset/raw"
-    dataset_name = f"Emilia_{'_'.join(langs)}_{tokenizer}"
+    langs = ["EN"]
+    dataset_dir = "data/datasetVN"
+    dataset_name = f"vnTTS_{'_'.join(langs)}_{tokenizer}"
     save_dir = str(files("f5_tts").joinpath("../../")) + f"/data/{dataset_name}"
     print(f"\nPrepare for {dataset_name}, will save to {save_dir}\n")
 

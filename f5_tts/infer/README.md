@@ -23,24 +23,12 @@ Currently supported features:
 - Basic TTS with Chunk Inference
 - Multi-Style / Multi-Speaker Generation
 - Voice Chat powered by Qwen2.5-3B-Instruct
-- [Custom inference with more language support](src/f5_tts/infer/SHARED.md)
 
 The cli command `f5-tts_infer-gradio` equals to `python src/f5_tts/infer/infer_gradio.py`, which launches a Gradio APP (web interface) for inference.
 
 The script will load model checkpoints from Huggingface. You can also manually download files and update the path to `load_model()` in `infer_gradio.py`. Currently only load TTS models first, will load ASR model to do transcription if `ref_text` not provided, will load LLM model if use Voice Chat.
 
-More flags options:
-
-```bash
-# Automatically launch the interface in the default web browser
-f5-tts_infer-gradio --inbrowser
-
-# Set the root path of the application, if it's not served from the root ("/") of the domain
-# For example, if the application is served at "https://example.com/myapp"
-f5-tts_infer-gradio --root_path "/myapp"
-```
-
-Could also be used as a component for larger application:
+Could also be used as a component for larger application.
 ```python
 import gradio as gr
 from f5_tts.infer.infer_gradio import app
@@ -68,16 +56,17 @@ Basically you can inference with flags:
 ```bash
 # Leave --ref_text "" will have ASR model transcribe (extra GPU memory usage)
 f5-tts_infer-cli \
---model F5TTS_v1_Base \
+--model "F5-TTS" \
 --ref_audio "ref_audio.wav" \
---ref_text "The content, subtitle or transcription of reference audio." \
---gen_text "Some text you want TTS model generate for you."
+--ref_text "hình ảnh cực đoan trong em_vi của sơn tùng mờ thành phố bị khán giả chỉ trích" \
+--gen_text "tôi yêu em đến nay chừng có thể, ngọn lửa tình chưa hẳn đã tàn phai." \
+--vocoder_name vocos \
+--load_vocoder_from_local \
+--ckpt_file ckpts/F5TTS_Base_vocos_char_vnTTS/model_last.pt
 
-# Use BigVGAN as vocoder. Currently only support F5TTS_Base. 
-f5-tts_infer-cli --model F5TTS_Base --vocoder_name bigvgan --load_vocoder_from_local
-
-# Use custom path checkpoint, e.g.
-f5-tts_infer-cli --ckpt_file ckpts/F5TTS_v1_Base/model_1250000.safetensors
+# Choose Vocoder
+f5-tts_infer-cli --vocoder_name bigvgan --load_vocoder_from_local --ckpt_file <YOUR_CKPT_PATH, eg:ckpts/F5TTS_Base_bigvgan/model_1250000.pt>
+f5-tts_infer-cli --vocoder_name vocos --load_vocoder_from_local --ckpt_file <YOUR_CKPT_PATH, eg:ckpts/F5TTS_Base/model_1200000.safetensors>
 
 # More instructions
 f5-tts_infer-cli --help
@@ -92,8 +81,8 @@ f5-tts_infer-cli -c custom.toml
 For example, you can use `.toml` to pass in variables, refer to `src/f5_tts/infer/examples/basic/basic.toml`:
 
 ```toml
-# F5TTS_v1_Base | E2TTS_Base
-model = "F5TTS_v1_Base"
+# F5-TTS | E2-TTS
+model = "F5-TTS"
 ref_audio = "infer/examples/basic/basic_ref_en.wav"
 # If an empty "", transcribes the reference audio automatically.
 ref_text = "Some call me nature, others call me mother nature."
@@ -107,8 +96,8 @@ output_dir = "tests"
 You can also leverage `.toml` file to do multi-style generation, refer to `src/f5_tts/infer/examples/multi/story.toml`.
 
 ```toml
-# F5TTS_v1_Base | E2TTS_Base
-model = "F5TTS_v1_Base"
+# F5-TTS | E2-TTS
+model = "F5-TTS"
 ref_audio = "infer/examples/multi/main.flac"
 # If an empty "", transcribes the reference audio automatically.
 ref_text = ""
@@ -128,22 +117,6 @@ ref_text = ""
 ```
 You should mark the voice with `[main]` `[town]` `[country]` whenever you want to change voice, refer to `src/f5_tts/infer/examples/multi/story.txt`.
 
-## Socket Real-time Service
-
-Real-time voice output with chunk stream:
-
-```bash
-# Start socket server
-python src/f5_tts/socket_server.py
-
-# If PyAudio not installed
-sudo apt-get install portaudio19-dev
-pip install pyaudio
-
-# Communicate with socket client
-python src/f5_tts/socket_client.py
-```
-
 ## Speech Editing
 
 To test speech editing capabilities, use the following command:
@@ -151,4 +124,76 @@ To test speech editing capabilities, use the following command:
 ```bash
 python src/f5_tts/infer/speech_edit.py
 ```
+
+## Socket Realtime Client
+
+To communicate with socket server you need to run 
+```bash
+python src/f5_tts/socket_server.py
+```
+
+<details>
+<summary>Then create client to communicate</summary>
+
+``` python
+import socket
+import numpy as np
+import asyncio
+import pyaudio
+
+async def listen_to_voice(text, server_ip='localhost', server_port=9999):
+    client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    client_socket.connect((server_ip, server_port))
+
+    async def play_audio_stream():
+        buffer = b''
+        p = pyaudio.PyAudio()
+        stream = p.open(format=pyaudio.paFloat32,
+                        channels=1,
+                        rate=24000,  # Ensure this matches the server's sampling rate
+                        output=True,
+                        frames_per_buffer=2048)
+
+        try:
+            while True:
+                chunk = await asyncio.get_event_loop().run_in_executor(None, client_socket.recv, 1024)
+                if not chunk:  # End of stream
+                    break
+                if b"END_OF_AUDIO" in chunk:
+                    buffer += chunk.replace(b"END_OF_AUDIO", b"")
+                    if buffer:
+                        audio_array = np.frombuffer(buffer, dtype=np.float32).copy()  # Make a writable copy
+                        stream.write(audio_array.tobytes())
+                    break
+                buffer += chunk
+                if len(buffer) >= 4096:
+                    audio_array = np.frombuffer(buffer[:4096], dtype=np.float32).copy()  # Make a writable copy
+                    stream.write(audio_array.tobytes())
+                    buffer = buffer[4096:]
+        finally:
+            stream.stop_stream()
+            stream.close()
+            p.terminate()
+
+    try:
+        # Send only the text to the server
+        await asyncio.get_event_loop().run_in_executor(None, client_socket.sendall, text.encode('utf-8'))
+        await play_audio_stream()
+        print("Audio playback finished.")
+
+    except Exception as e:
+        print(f"Error in listen_to_voice: {e}")
+
+    finally:
+        client_socket.close()
+
+# Example usage: Replace this with your actual server IP and port
+async def main():
+    await listen_to_voice("my name is jenny..", server_ip='localhost', server_port=9998)
+
+# Run the main async function
+asyncio.run(main())
+```
+
+</details>
 

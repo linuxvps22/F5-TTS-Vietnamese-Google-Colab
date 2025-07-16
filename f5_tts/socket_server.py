@@ -1,75 +1,21 @@
 import argparse
 import gc
-import logging
-import numpy as np
-import queue
 import socket
 import struct
-import threading
-import traceback
-import wave
-from importlib.resources import files
-
 import torch
 import torchaudio
-from huggingface_hub import hf_hub_download
-from omegaconf import OmegaConf
+import traceback
+from importlib.resources import files
+from threading import Thread
 
-from f5_tts.model.backbones.dit import DiT  # noqa: F401. used for config
-from f5_tts.infer.utils_infer import (
-    chunk_text,
-    preprocess_ref_audio_text,
-    load_vocoder,
-    load_model,
-    infer_batch_process,
-)
+from cached_path import cached_path
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
-
-class AudioFileWriterThread(threading.Thread):
-    """Threaded file writer to avoid blocking the TTS streaming process."""
-
-    def __init__(self, output_file, sampling_rate):
-        super().__init__()
-        self.output_file = output_file
-        self.sampling_rate = sampling_rate
-        self.queue = queue.Queue()
-        self.stop_event = threading.Event()
-        self.audio_data = []
-
-    def run(self):
-        """Process queued audio data and write it to a file."""
-        logger.info("AudioFileWriterThread started.")
-        with wave.open(self.output_file, "wb") as wf:
-            wf.setnchannels(1)
-            wf.setsampwidth(2)
-            wf.setframerate(self.sampling_rate)
-
-            while not self.stop_event.is_set() or not self.queue.empty():
-                try:
-                    chunk = self.queue.get(timeout=0.1)
-                    if chunk is not None:
-                        chunk = np.int16(chunk * 32767)
-                        self.audio_data.append(chunk)
-                        wf.writeframes(chunk.tobytes())
-                except queue.Empty:
-                    continue
-
-    def add_chunk(self, chunk):
-        """Add a new chunk to the queue."""
-        self.queue.put(chunk)
-
-    def stop(self):
-        """Stop writing and ensure all queued data is written."""
-        self.stop_event.set()
-        self.join()
-        logger.info("Audio writing completed.")
+from infer.utils_infer import infer_batch_process, preprocess_ref_audio_text, load_vocoder, load_model
+from model.backbones.dit import DiT
 
 
 class TTSStreamingProcessor:
-    def __init__(self, model, ckpt_file, vocab_file, ref_audio, ref_text, device=None, dtype=torch.float32):
+    def __init__(self, ckpt_file, vocab_file, ref_audio, ref_text, device=None, dtype=torch.float32):
         self.device = device or (
             "cuda"
             if torch.cuda.is_available()
@@ -79,135 +25,124 @@ class TTSStreamingProcessor:
             if torch.backends.mps.is_available()
             else "cpu"
         )
-        model_cfg = OmegaConf.load(str(files("f5_tts").joinpath(f"configs/{model}.yaml")))
-        self.model_cls = globals()[model_cfg.model.backbone]
-        self.model_arc = model_cfg.model.arch
-        self.mel_spec_type = model_cfg.model.mel_spec.mel_spec_type
-        self.sampling_rate = model_cfg.model.mel_spec.target_sample_rate
 
-        self.model = self.load_ema_model(ckpt_file, vocab_file, dtype)
-        self.vocoder = self.load_vocoder_model()
-
-        self.update_reference(ref_audio, ref_text)
-        self._warm_up()
-        self.file_writer_thread = None
-        self.first_package = True
-
-    def load_ema_model(self, ckpt_file, vocab_file, dtype):
-        return load_model(
-            self.model_cls,
-            self.model_arc,
+        # Load the model using the provided checkpoint and vocab files
+        self.model = load_model(
+            model_cls=DiT,
+            model_cfg=dict(dim=1024, depth=22, heads=16, ff_mult=2, text_dim=512, conv_layers=4),
             ckpt_path=ckpt_file,
-            mel_spec_type=self.mel_spec_type,
+            mel_spec_type="vocos",  # or "bigvgan" depending on vocoder
             vocab_file=vocab_file,
             ode_method="euler",
             use_ema=True,
             device=self.device,
         ).to(self.device, dtype=dtype)
 
-    def load_vocoder_model(self):
-        return load_vocoder(vocoder_name=self.mel_spec_type, is_local=False, local_path=None, device=self.device)
+        # Load the vocoder
+        self.vocoder = load_vocoder(is_local=False)
 
-    def update_reference(self, ref_audio, ref_text):
-        self.ref_audio, self.ref_text = preprocess_ref_audio_text(ref_audio, ref_text)
-        self.audio, self.sr = torchaudio.load(self.ref_audio)
+        # Set sampling rate for streaming
+        self.sampling_rate = 24000  # Consistency with client
 
-        ref_audio_duration = self.audio.shape[-1] / self.sr
-        ref_text_byte_len = len(self.ref_text.encode("utf-8"))
-        self.max_chars = int(ref_text_byte_len / (ref_audio_duration) * (25 - ref_audio_duration))
-        self.few_chars = int(ref_text_byte_len / (ref_audio_duration) * (25 - ref_audio_duration) / 2)
-        self.min_chars = int(ref_text_byte_len / (ref_audio_duration) * (25 - ref_audio_duration) / 4)
+        # Set reference audio and text
+        self.ref_audio = ref_audio
+        self.ref_text = ref_text
+
+        # Warm up the model
+        self._warm_up()
 
     def _warm_up(self):
-        logger.info("Warming up the model...")
+        """Warm up the model with a dummy input to ensure it's ready for real-time processing."""
+        print("Warming up the model...")
+        ref_audio, ref_text = preprocess_ref_audio_text(self.ref_audio, self.ref_text)
+        audio, sr = torchaudio.load(ref_audio)
         gen_text = "Warm-up text for the model."
-        for _ in infer_batch_process(
-            (self.audio, self.sr),
-            self.ref_text,
-            [gen_text],
+
+        # Pass the vocoder as an argument here
+        infer_batch_process((audio, sr), ref_text, [gen_text], self.model, self.vocoder, device=self.device)
+        print("Warm-up completed.")
+
+    def generate_stream(self, text, play_steps_in_s=0.5):
+        """Generate audio in chunks and yield them in real-time."""
+        # Preprocess the reference audio and text
+        ref_audio, ref_text = preprocess_ref_audio_text(self.ref_audio, self.ref_text)
+
+        # Load reference audio
+        audio, sr = torchaudio.load(ref_audio)
+
+        # Run inference for the input text
+        audio_chunk, final_sample_rate, _ = infer_batch_process(
+            (audio, sr),
+            ref_text,
+            [text],
             self.model,
             self.vocoder,
-            progress=None,
-            device=self.device,
-            streaming=True,
-        ):
-            pass
-        logger.info("Warm-up completed.")
-
-    def generate_stream(self, text, conn):
-        text_batches = chunk_text(text, max_chars=self.max_chars)
-        if self.first_package:
-            text_batches = chunk_text(text_batches[0], max_chars=self.few_chars) + text_batches[1:]
-            text_batches = chunk_text(text_batches[0], max_chars=self.min_chars) + text_batches[1:]
-            self.first_package = False
-
-        audio_stream = infer_batch_process(
-            (self.audio, self.sr),
-            self.ref_text,
-            text_batches,
-            self.model,
-            self.vocoder,
-            progress=None,
-            device=self.device,
-            streaming=True,
-            chunk_size=2048,
+            device=self.device,  # Pass vocoder here
         )
 
-        # Reset the file writer thread
-        if self.file_writer_thread is not None:
-            self.file_writer_thread.stop()
-        self.file_writer_thread = AudioFileWriterThread("output.wav", self.sampling_rate)
-        self.file_writer_thread.start()
+        # Break the generated audio into chunks and send them
+        chunk_size = int(final_sample_rate * play_steps_in_s)
 
-        for audio_chunk, _ in audio_stream:
-            if len(audio_chunk) > 0:
-                logger.info(f"Generated audio chunk of size: {len(audio_chunk)}")
+        if len(audio_chunk) < chunk_size:
+            packed_audio = struct.pack(f"{len(audio_chunk)}f", *audio_chunk)
+            yield packed_audio
+            return
 
-                # Send audio chunk via socket
-                conn.sendall(struct.pack(f"{len(audio_chunk)}f", *audio_chunk))
+        for i in range(0, len(audio_chunk), chunk_size):
+            chunk = audio_chunk[i : i + chunk_size]
 
-                # Write to file asynchronously
-                self.file_writer_thread.add_chunk(audio_chunk)
+            # Check if it's the final chunk
+            if i + chunk_size >= len(audio_chunk):
+                chunk = audio_chunk[i:]
 
-        logger.info("Finished sending audio stream.")
-        conn.sendall(b"END")  # Send end signal
-
-        # Ensure all audio data is written before exiting
-        self.file_writer_thread.stop()
+            # Send the chunk if it is not empty
+            if len(chunk) > 0:
+                packed_audio = struct.pack(f"{len(chunk)}f", *chunk)
+                yield packed_audio
 
 
-def handle_client(conn, processor):
+def handle_client(client_socket, processor):
     try:
-        with conn:
-            conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-            while True:
-                data = conn.recv(1024)
-                if not data:
-                    processor.first_package = True
-                    break
-                data_str = data.decode("utf-8").strip()
-                logger.info(f"Received text: {data_str}")
+        while True:
+            # Receive data from the client
+            data = client_socket.recv(1024).decode("utf-8")
+            if not data:
+                break
 
-                try:
-                    processor.generate_stream(data_str, conn)
-                except Exception as inner_e:
-                    logger.error(f"Error during processing: {inner_e}")
-                    traceback.print_exc()
-                    break
+            try:
+                # The client sends the text input
+                text = data.strip()
+
+                # Generate and stream audio chunks
+                for audio_chunk in processor.generate_stream(text):
+                    client_socket.sendall(audio_chunk)
+
+                # Send end-of-audio signal
+                client_socket.sendall(b"END_OF_AUDIO")
+
+            except Exception as inner_e:
+                print(f"Error during processing: {inner_e}")
+                traceback.print_exc()  # Print the full traceback to diagnose the issue
+                break
+
     except Exception as e:
-        logger.error(f"Error handling client: {e}")
+        print(f"Error handling client: {e}")
         traceback.print_exc()
+    finally:
+        client_socket.close()
 
 
 def start_server(host, port, processor):
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind((host, port))
-        s.listen()
-        logger.info(f"Server started on {host}:{port}")
-        while True:
-            conn, addr = s.accept()
-            logger.info(f"Connected by {addr}")
-            handle_client(conn, processor)
+    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server.bind((host, port))
+    server.listen(5)
+    print(f"Server listening on {host}:{port}")
+
+    while True:
+        client_socket, addr = server.accept()
+        print(f"Accepted connection from {addr}")
+        client_handler = Thread(target=handle_client, args=(client_socket, processor))
+        client_handler.start()
 
 
 if __name__ == "__main__":
@@ -217,13 +152,8 @@ if __name__ == "__main__":
     parser.add_argument("--port", default=9998)
 
     parser.add_argument(
-        "--model",
-        default="F5TTS_v1_Base",
-        help="The model name, e.g. F5TTS_v1_Base",
-    )
-    parser.add_argument(
         "--ckpt_file",
-        default=str(hf_hub_download(repo_id="SWivid/F5-TTS", filename="F5TTS_v1_Base/model_1250000.safetensors")),
+        default=str(cached_path("hf://SWivid/F5-TTS/F5TTS_Base/model_1200000.safetensors")),
         help="Path to the model checkpoint file",
     )
     parser.add_argument(
@@ -251,7 +181,6 @@ if __name__ == "__main__":
     try:
         # Initialize the processor with the model and vocoder
         processor = TTSStreamingProcessor(
-            model=args.model,
             ckpt_file=args.ckpt_file,
             vocab_file=args.vocab_file,
             ref_audio=args.ref_audio,

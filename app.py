@@ -14,7 +14,6 @@ from f5_tts.infer.utils_infer import (
     save_spectrogram,
 )
 
-
 def post_process(text):
     text = " " + text + " "
     text = text.replace(" . . ", " . ")
@@ -96,4 +95,4 @@ with gr.Blocks(theme=gr.themes.Soft()) as demo:
     btn_synthesize.click(infer_tts, inputs=[ref_audio, gen_text, speed], outputs=[output_audio, output_spectrogram])
 
 # Run Gradio with share=True to get a gradio.live link
-demo.queue().launch(share=True)
+demo.queue().launch()
