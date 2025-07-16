@@ -111,10 +111,11 @@ def infer_tts(ref_audio_orig: str, gen_text: str, ref_text: str = "", speed: flo
 # Gradio UI
 with gr.Blocks(theme=gr.themes.Soft()) as demo:
     gr.Markdown("""
-    # 🎤 F5-TTS: Vietnamese Text-to-Speech Synthesis.
-    # The model was trained with approximately 1000 hours of data on an RTX 3090 GPU. 
-    Enter text and upload a sample voice to generate natural speech.
+    # 🎤 F5-TTS: Tổng hợp giọng nói tiếng Việt từ văn bản.
+    # Mô hình được huấn luyện với khoảng 1000 giờ dữ liệu trên GPU RTX 3090.
+    Nhập văn bản và tải lên một mẫu giọng nói để tạo ra giọng nói tự nhiên.
     """)
+
     
     with gr.Row():
         ref_audio = gr.Audio(label="🔊 Sample Voice", type="filepath")
