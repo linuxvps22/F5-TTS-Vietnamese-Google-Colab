@@ -96,4 +96,4 @@ with gr.Blocks(theme=gr.themes.Soft()) as demo:
     btn_synthesize.click(infer_tts, inputs=[ref_audio, gen_text, speed], outputs=[output_audio, output_spectrogram])
 
 # Run Gradio with share=True to get a gradio.live link
-demo.queue().launch()
+demo.queue().launch(share=True)
