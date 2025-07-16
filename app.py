@@ -12,6 +12,9 @@ from f5_tts.infer.utils_infer import (
     load_model,
     infer_process,
     save_spectrogram,
+    chunk_text,
+    process_text_chunks,
+    SilenceToken,
 )
 
 def post_process(text):
@@ -42,23 +45,22 @@ model = load_model(
 
 @spaces.GPU
 def infer_tts(ref_audio_orig: str, gen_text: str, speed: float = 1.0, request: gr.Request = None):
-
     if not ref_audio_orig:
         raise gr.Error("Please upload a sample audio file.")
     if not gen_text.strip():
         raise gr.Error("Please enter the text content to generate voice.")
     if len(gen_text.split()) > 1000:
         raise gr.Error("Please enter text content with less than 1000 words.")
-    
     try:
         ref_audio, ref_text = preprocess_ref_audio_text(ref_audio_orig, "")
+        processed_text_chunks = chunk_text(post_process(gen_text))
+        processed_text_chunks = process_text_chunks(processed_text_chunks)
         final_wave, final_sample_rate, spectrogram = infer_process(
-            ref_audio, ref_text.lower(), post_process(TTSnorm(gen_text)).lower(), model, vocoder, speed=speed
+            ref_audio, ref_text.lower(), processed_text_chunks, model, vocoder, speed=speed
         )
         with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp_spectrogram:
             spectrogram_path = tmp_spectrogram.name
             save_spectrogram(spectrogram, spectrogram_path)
-
         return (final_sample_rate, final_wave), spectrogram_path
     except Exception as e:
         raise gr.Error(f"Error generating voice: {e}")
@@ -95,4 +97,4 @@ with gr.Blocks(theme=gr.themes.Soft()) as demo:
     btn_synthesize.click(infer_tts, inputs=[ref_audio, gen_text, speed], outputs=[output_audio, output_spectrogram])
 
 # Run Gradio with share=True to get a gradio.live link
-demo.queue().launch()
+demo.queue().launch(share=True)

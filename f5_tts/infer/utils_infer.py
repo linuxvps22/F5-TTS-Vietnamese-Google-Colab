@@ -10,6 +10,7 @@ import hashlib
 import re
 import tempfile
 from importlib.resources import files
+from collections import namedtuple
 
 import matplotlib
 
@@ -52,13 +53,15 @@ win_length = 1024
 n_fft = 1024
 mel_spec_type = "vocos"
 target_rms = 0.1
-cross_fade_duration = 0.15
+cross_fade_duration = 0.25
 ode_method = "euler"
 nfe_step = 32  # 16, 32
 cfg_strength = 2.0
 sway_sampling_coef = -1.0
 speed = 1.0
 fix_duration = None
+
+SilenceToken = namedtuple('SilenceToken', ['duration_ms'])
 
 # -----------------------------------------
 
@@ -67,31 +70,43 @@ fix_duration = None
 
 
 def chunk_text(text, max_chars=135):
+    # Nhận diện và tách các cụm silence
+    silence_pattern = r' (?:::sil#(\d{1,5}):::) '
+    result = []
+    pos = 0
+    for m in re.finditer(silence_pattern, text):
+        before = text[pos:m.start()]
+        if before.strip():
+            result.extend(_split_sentences(before, max_chars))
+        ms = int(m.group(1))
+        ms = max(100, min(20000, int(round(ms / 100.0) * 100)))
+        result.append(SilenceToken(ms))
+        pos = m.end()
+    after = text[pos:]
+    if after.strip():
+        result.extend(_split_sentences(after, max_chars))
+    return result
 
-    # print(text)
 
-    # Bước 1: Tách câu theo dấu ". "
-    sentences = [s.strip() for s in text.split('. ') if s.strip()]
-    
-    # Ghép câu ngắn hơn 4 từ với câu liền kề
+def _split_sentences(text, max_chars):
+    sentence_endings = r'[.!?;]'
+    text = re.sub(r'[\r\n]+', '. ', text)
+    sentences = re.split(r'(?<=' + sentence_endings + r')\s+', text)
+    sentences = [s.strip() for s in sentences if s.strip()]
     i = 0
     while i < len(sentences):
         if len(sentences[i].split()) < 4:
-            if i == 0:
-                # Ghép với câu sau
+            if i == 0 and len(sentences) > 1:
                 sentences[i + 1] = sentences[i] + ', ' + sentences[i + 1]
                 del sentences[i]
-            else:
-                # Ghép với câu trước
+            elif i > 0:
                 sentences[i - 1] = sentences[i - 1] + ', ' + sentences[i]
                 del sentences[i]
                 i -= 1
+            else:
+                i += 1
         else:
             i += 1
-
-    # print(sentences)
-
-    # Bước 2: Tách phần quá dài trong câu theo dấu ", "
     final_sentences = []
     for sentence in sentences:
         parts = [p.strip() for p in sentence.split(', ')]
@@ -100,21 +115,14 @@ def chunk_text(text, max_chars=135):
             buffer.append(part)
             total_words = sum(len(p.split()) for p in buffer)
             if total_words > 20:
-                # Tách câu ra
                 long_part = ', '.join(buffer)
                 final_sentences.append(long_part)
                 buffer = []
         if buffer:
             final_sentences.append(', '.join(buffer))
-
-    # print(final_sentences)
-
-    if len(final_sentences[-1].split()) < 4 and len(final_sentences) >= 2:
-        final_sentences[-2] = final_sentences[-2] + ", " + final_sentences[-1]
+    if len(final_sentences) >= 2 and len(final_sentences[-1].split()) < 4:
+        final_sentences[-2] = final_sentences[-2] + ', ' + final_sentences[-1]
         final_sentences = final_sentences[0:-1]
-    
-    # print(final_sentences)
-
     return final_sentences
 
 
@@ -438,6 +446,16 @@ def infer_process(
 # infer batches
 
 
+def process_text_chunks(chunks):
+    processed = []
+    for chunk in chunks:
+        if isinstance(chunk, SilenceToken):
+            processed.append(chunk)
+        else:
+            processed.append(TTSnorm(chunk))
+    return processed
+
+
 def infer_batch_process(
     ref_audio,
     ref_text,
@@ -458,7 +476,6 @@ def infer_batch_process(
     audio, sr = ref_audio
     if audio.shape[0] > 1:
         audio = torch.mean(audio, dim=0, keepdim=True)
-
     rms = torch.sqrt(torch.mean(torch.square(audio)))
     if rms < target_rms:
         audio = audio * target_rms / rms
@@ -466,27 +483,25 @@ def infer_batch_process(
         resampler = torchaudio.transforms.Resample(sr, target_sample_rate)
         audio = resampler(audio)
     audio = audio.to(device)
-
     generated_waves = []
     spectrograms = []
-
     if len(ref_text[-1].encode("utf-8")) == 1:
         ref_text = ref_text + " "
     for i, gen_text in enumerate(progress.tqdm(gen_text_batches)):
-        # Prepare the text
+        if isinstance(gen_text, SilenceToken):
+            silence_samples = int(target_sample_rate * gen_text.duration_ms / 1000)
+            generated_waves.append(np.zeros(silence_samples, dtype=np.float32))
+            spectrograms.append(np.zeros((n_mel_channels, silence_samples // hop_length)))
+            continue
         text_list = [ref_text + gen_text]
         final_text_list = convert_char_to_pinyin(text_list)
-
         ref_audio_len = audio.shape[-1] // hop_length
         if fix_duration is not None:
             duration = int(fix_duration * target_sample_rate / hop_length)
         else:
-            # Calculate duration
             ref_text_len = len(ref_text.encode("utf-8"))
             gen_text_len = len(gen_text.encode("utf-8"))
             duration = ref_audio_len + int(ref_audio_len / ref_text_len * gen_text_len / speed)
-
-        # inference
         with torch.inference_mode():
             generated, _ = model_obj.sample(
                 cond=audio,
@@ -496,7 +511,6 @@ def infer_batch_process(
                 cfg_strength=cfg_strength,
                 sway_sampling_coef=sway_sampling_coef,
             )
-
             generated = generated.to(torch.float32)
             generated = generated[:, ref_audio_len:, :]
             generated_mel_spec = generated.permute(0, 2, 1)
@@ -506,53 +520,31 @@ def infer_batch_process(
                 generated_wave = vocoder(generated_mel_spec)
             if rms < target_rms:
                 generated_wave = generated_wave * rms / target_rms
-
-            # wav -> numpy
             generated_wave = generated_wave.squeeze().cpu().numpy()
-
             generated_waves.append(generated_wave)
             spectrograms.append(generated_mel_spec[0].cpu().numpy())
-
-    # Combine all generated waves with cross-fading
     if cross_fade_duration <= 0:
-        # Simply concatenate
         final_wave = np.concatenate(generated_waves)
     else:
         final_wave = generated_waves[0]
         for i in range(1, len(generated_waves)):
             prev_wave = final_wave
             next_wave = generated_waves[i]
-
-            # Calculate cross-fade samples, ensuring it does not exceed wave lengths
             cross_fade_samples = int(cross_fade_duration * target_sample_rate)
             cross_fade_samples = min(cross_fade_samples, len(prev_wave), len(next_wave))
-
             if cross_fade_samples <= 0:
-                # No overlap possible, concatenate
                 final_wave = np.concatenate([prev_wave, next_wave])
                 continue
-
-            # Overlapping parts
             prev_overlap = prev_wave[-cross_fade_samples:]
             next_overlap = next_wave[:cross_fade_samples]
-
-            # Fade out and fade in
             fade_out = np.linspace(1, 0, cross_fade_samples)
             fade_in = np.linspace(0, 1, cross_fade_samples)
-
-            # Cross-faded overlap
             cross_faded_overlap = prev_overlap * fade_out + next_overlap * fade_in
-
-            # Combine
             new_wave = np.concatenate(
                 [prev_wave[:-cross_fade_samples], cross_faded_overlap, next_wave[cross_fade_samples:]]
             )
-
             final_wave = new_wave
-
-    # Create a combined spectrogram
     combined_spectrogram = np.concatenate(spectrograms, axis=1)
-
     return final_wave, target_sample_rate, combined_spectrogram
 
 
