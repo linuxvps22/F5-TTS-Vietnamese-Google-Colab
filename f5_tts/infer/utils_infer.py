@@ -785,3 +785,24 @@ def save_spectrogram(spectrogram, path):
     plt.colorbar()
     plt.savefig(path)
     plt.close()
+
+def replace_silence_with_placeholders(text):
+    """
+    Thay thế tất cả silent token <<<sil#...>>> bằng placeholder __SIL0__, __SIL1__, ...
+    Trả về text mới, list silent token, list placeholder
+    """
+    pattern = r'<<<sil#\d+>>>'
+    silences = re.findall(pattern, text)
+    placeholders = [f"__SIL{i}__" for i in range(len(silences))]
+    text_with_ph = text
+    for sil, ph in zip(silences, placeholders):
+        text_with_ph = text_with_ph.replace(sil, ph, 1)
+    return text_with_ph, silences, placeholders
+
+def restore_silence_from_placeholders(text, silences, placeholders):
+    """
+    Thay thế các placeholder __SIL0__, __SIL1__, ... về lại silent token gốc
+    """
+    for ph, sil in zip(placeholders, silences):
+        text = text.replace(ph, sil)
+    return text
