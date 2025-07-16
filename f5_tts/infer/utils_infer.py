@@ -63,202 +63,47 @@ fix_duration = None
 
 # -----------------------------------------
 
-# Silence token processing functions
-
-def parse_silence_tokens(text):
-    """
-    Parse silence tokens in format <<<sil#duration>>> and extract silence information
-    
-    Args:
-        text (str): Input text with silence tokens
-        
-    Returns:
-        tuple: (cleaned_text, silence_segments)
-            - cleaned_text: Text with silence tokens removed
-            - silence_segments: List of (position, duration_ms) tuples
-    """
-    import re
-    
-    silence_pattern = r'<<<sil#(\d+)>>>'
-    silence_segments = []
-    
-    # Find all silence tokens and their positions
-    matches = list(re.finditer(silence_pattern, text))
-    
-    # Process matches in reverse order to maintain correct positions
-    cleaned_text = text
-    offset = 0
-    
-    for match in reversed(matches):
-        duration_ms = int(match.group(1))
-        start_pos = match.start() - offset
-        end_pos = match.end() - offset
-        
-        # Store position in cleaned text and duration
-        silence_segments.insert(0, (start_pos, duration_ms))
-        
-        # Remove the silence token from text
-        cleaned_text = cleaned_text[:match.start()] + cleaned_text[match.end():]
-        offset += len(match.group(0))
-    
-    return cleaned_text, silence_segments
-
-
-def validate_silence_tokens(text):
-    """
-    Validate silence token placement to avoid issues
-    
-    Args:
-        text (str): Input text with silence tokens
-        
-    Returns:
-        tuple: (is_valid, error_message)
-    """
-    import re
-    
-    silence_pattern = r'<<<sil#(\d+)>>>'
-    
-    # Check for tokens without proper spacing
-    invalid_patterns = [
-        r'\S<<<sil#\d+>>>',  # No space before token
-        r'<<<sil#\d+>>>\S',  # No space after token
-    ]
-    
-    for pattern in invalid_patterns:
-        if re.search(pattern, text):
-            return False, "Silence tokens must be surrounded by spaces"
-    
-    # Check for valid duration values
-    matches = re.findall(r'<<<sil#(\d+)>>>', text)
-    for duration in matches:
-        duration_ms = int(duration)
-        if duration_ms < 50 or duration_ms > 5000:
-            return False, f"Silence duration {duration_ms}ms is out of range (50-5000ms)"
-    
-    return True, ""
-
-
-def apply_silence_to_audio(audio_wave, silence_segments, sample_rate=24000, text_length=None):
-    """
-    Apply silence segments to generated audio based on text positions
-    
-    Args:
-        audio_wave (numpy.ndarray): Generated audio wave
-        silence_segments (list): List of (text_position, duration_ms) tuples
-        sample_rate (int): Audio sample rate
-        text_length (int): Length of the cleaned text for better position calculation
-        
-    Returns:
-        numpy.ndarray: Audio with silence applied
-    """
-    if not silence_segments:
-        return audio_wave
-    
-    # Simple approach: insert silence at proportional positions
-    result_segments = []
-    audio_length = len(audio_wave)
-    
-    # Sort silence segments by position
-    sorted_segments = sorted(silence_segments, key=lambda x: x[0])
-    
-    current_audio_pos = 0
-    
-    for text_pos, duration_ms in sorted_segments:
-        # Improved proportional mapping using actual text length
-        if text_length and text_length > 0:
-            relative_pos = min(text_pos / text_length, 1.0)
-        else:
-            # Fallback to rough estimation
-            relative_pos = min(text_pos / 100.0, 1.0)
-        
-        audio_pos = int(relative_pos * audio_length)
-        audio_pos = max(current_audio_pos, min(audio_pos, audio_length))
-        
-        # Add audio segment before silence
-        if audio_pos > current_audio_pos:
-            result_segments.append(audio_wave[current_audio_pos:audio_pos])
-        
-        # Add silence
-        silence_samples = int(duration_ms * sample_rate / 1000)
-        silence = np.zeros(silence_samples, dtype=audio_wave.dtype)
-        result_segments.append(silence)
-        
-        current_audio_pos = audio_pos
-    
-    # Add remaining audio
-    if current_audio_pos < audio_length:
-        result_segments.append(audio_wave[current_audio_pos:])
-    
-    return np.concatenate(result_segments) if result_segments else audio_wave
-
-
-def insert_silence_in_audio(audio_segments, silence_segments, sample_rate=24000):
-    """
-    Insert silence into audio based on silence segments (legacy function)
-    
-    Args:
-        audio_segments (list): List of audio numpy arrays
-        silence_segments (list): List of (position, duration_ms) tuples
-        sample_rate (int): Audio sample rate
-        
-    Returns:
-        numpy.ndarray: Audio with silence inserted
-    """
-    if not silence_segments:
-        return np.concatenate(audio_segments) if audio_segments else np.array([])
-    
-    # Convert duration to samples
-    silence_samples = []
-    for pos, duration_ms in silence_segments:
-        samples = int(duration_ms * sample_rate / 1000)
-        silence_samples.append((pos, samples))
-    
-    # Insert silence at appropriate positions
-    result_audio = []
-    current_pos = 0
-    
-    for i, audio_segment in enumerate(audio_segments):
-        # Check if we need to insert silence before this segment
-        for pos, samples in silence_samples:
-            if pos == current_pos:
-                silence = np.zeros(samples, dtype=audio_segment.dtype)
-                result_audio.append(silence)
-        
-        result_audio.append(audio_segment)
-        current_pos += len(audio_segment)
-    
-    return np.concatenate(result_audio) if result_audio else np.array([])
-
 
 # chunk text into smaller pieces
 
 
 def chunk_text(text, max_chars=135):
-    """
-    Chia text thành các đoạn nhỏ, đảm bảo không cắt giữa placeholder __SILn__
-    """
-    import re
-    # Tách theo dấu chấm, nhưng giữ placeholder nguyên vẹn
-    sil_pattern = r'__SIL\d+__'
-    # Tìm vị trí các placeholder
-    sil_matches = list(re.finditer(sil_pattern, text))
-    sil_pos = [m.start() for m in sil_matches]
-    
-    # Tách text thành các đoạn, mỗi đoạn không vượt quá max_chars, không cắt giữa placeholder
-    chunks = []
+    sentences = [s.strip() for s in text.split('. ') if s.strip()]
     i = 0
-    while i < len(text):
-        end = min(i + max_chars, len(text))
-        # Nếu end nằm giữa placeholder thì lùi lại trước placeholder
-        for pos in sil_pos:
-            if i < pos < end:
-                end = pos
-                break
-        chunk = text[i:end].strip()
-        if chunk:
-            chunks.append(chunk)
-        i = end
-    return chunks
+    while i < len(sentences):
+        if len(sentences[i].split()) < 4:
+            if i == 0:
+                # Merge with the next sentence
+                sentences[i + 1] = sentences[i] + ', ' + sentences[i + 1]
+                del sentences[i]
+            else:
+                # Merge with the previous sentence
+                sentences[i - 1] = sentences[i - 1] + ', ' + sentences[i]
+                del sentences[i]
+                i -= 1
+        else:
+            i += 1
+
+    final_sentences = []
+    for sentence in sentences:
+        parts = [p.strip() for p in sentence.split(', ')]
+        buffer = []
+        for part in parts:
+            buffer.append(part)
+            total_words = sum(len(p.split()) for p in buffer)
+            if total_words > 20:
+                # Split into separate chunks
+                long_part = ', '.join(buffer)
+                final_sentences.append(long_part)
+                buffer = []
+        if buffer:
+            final_sentences.append(', '.join(buffer))
+
+    if len(final_sentences[-1].split()) < 4 and len(final_sentences) >= 2:
+        final_sentences[-2] = final_sentences[-2] + ", " + final_sentences[-1]
+        final_sentences = final_sentences[0:-1]
+
+    return final_sentences
 
 
 # load vocoder
@@ -527,6 +372,36 @@ def preprocess_ref_audio_text(ref_audio_orig, ref_text, clip_short=True, show_in
 # infer process: chunk text -> infer batches [i.e. infer_batch_process()]
 
 
+def parse_silence_tokens(text):
+    """
+    Tách text thành các đoạn (text hoặc silence), trả về list các tuple (type, value).
+    type: 'text' hoặc 'silence'.
+    value: nội dung text hoặc số ms của silence.
+    """
+    pattern = r"(\s<<<sil#(\d{1,5})>>>\s)"
+    result = []
+    last = 0
+    for m in re.finditer(pattern, text):
+        start, end = m.span()
+        # Đoạn text trước silence
+        if start > last:
+            chunk = text[last:start]
+            if chunk.strip():
+                result.append(("text", chunk))
+        # Đoạn silence
+        ms = int(m.group(2))
+        # Làm tròn lên bội 100, clamp 100-20000
+        ms = max(100, min(20000, ((ms + 99) // 100) * 100))
+        result.append(("silence", ms))
+        last = end
+    # Đoạn text còn lại
+    if last < len(text):
+        chunk = text[last:]
+        if chunk.strip():
+            result.append(("text", chunk))
+    return result
+
+
 def infer_process(
     ref_audio,
     ref_text,
@@ -545,31 +420,29 @@ def infer_process(
     fix_duration=fix_duration,
     device=device,
 ):
-    # Validate silence tokens first
-    is_valid, error_msg = validate_silence_tokens(gen_text)
-    if not is_valid:
-        show_info(f"Warning: {error_msg}")
-        show_info("Proceeding without silence token processing...")
-    else:
-        # Count silence tokens for info
-        silence_count = len(re.findall(r'<<<sil#(\d+)>>>', gen_text))
-        if silence_count > 0:
-            show_info(f"Found {silence_count} silence tokens")
-    
-    # Split the input text into batches (keeping silence tokens for now)
+    # Parse silence tokens và tách thành các đoạn (text/silence)
+    segments = parse_silence_tokens(gen_text)
+    # Chunk các đoạn text, giữ nguyên silence
+    chunked_segments = []
     audio, sr = torchaudio.load(ref_audio)
     max_chars = int(len(ref_text.encode("utf-8")) / (audio.shape[-1] / sr) * (22 - audio.shape[-1] / sr))
-    gen_text_batches = chunk_text(gen_text, max_chars=max_chars)
-    for i, gen_text_batch in enumerate(gen_text_batches):
-        print(f"gen_text {i}", gen_text_batch)
+    for typ, val in segments:
+        if typ == "text":
+            # chunk_text trả về list
+            for chunk in chunk_text(val, max_chars=max_chars):
+                if chunk.strip():
+                    chunked_segments.append(("text", chunk))
+        else:
+            chunked_segments.append(("silence", val))
+    for i, seg in enumerate(chunked_segments):
+        print(f"segment {i}", seg)
     print("\n")
-
-    show_info(f"Generating audio in {len(gen_text_batches)} batches...")
+    show_info(f"Generating audio in {len(chunked_segments)} segments (text/silence)...")
     return next(
         infer_batch_process(
             (audio, sr),
             ref_text,
-            gen_text_batches,
+            chunked_segments,
             model_obj,
             vocoder,
             mel_spec_type=mel_spec_type,
@@ -592,7 +465,7 @@ def infer_process(
 def infer_batch_process(
     ref_audio,
     ref_text,
-    gen_text_batches,
+    segments,  # list các tuple (type, value)
     model_obj,
     vocoder,
     mel_spec_type="vocos",
@@ -611,7 +484,6 @@ def infer_batch_process(
     audio, sr = ref_audio
     if audio.shape[0] > 1:
         audio = torch.mean(audio, dim=0, keepdim=True)
-
     rms = torch.sqrt(torch.mean(torch.square(audio)))
     if rms < target_rms:
         audio = audio * target_rms / rms
@@ -619,35 +491,23 @@ def infer_batch_process(
         resampler = torchaudio.transforms.Resample(sr, target_sample_rate)
         audio = resampler(audio)
     audio = audio.to(device)
-
     generated_waves = []
     spectrograms = []
-
     if len(ref_text[-1].encode("utf-8")) == 1:
         ref_text = ref_text + " "
-
-    def process_batch(gen_text):
+    def process_batch_text(gen_text):
         local_speed = speed
         if len(gen_text.encode("utf-8")) < 10:
             local_speed = 0.3
-
-        # Parse silence tokens from this batch
-        cleaned_gen_text, silence_segments = parse_silence_tokens(gen_text)
-        
-        # Prepare the text
-        text_list = [ref_text + cleaned_gen_text]
+        text_list = [ref_text + gen_text]
         final_text_list = convert_char_to_pinyin(text_list)
-
         ref_audio_len = audio.shape[-1] // hop_length
         if fix_duration is not None:
             duration = int(fix_duration * target_sample_rate / hop_length)
         else:
-            # Calculate duration based on cleaned text
             ref_text_len = len(ref_text.encode("utf-8"))
-            gen_text_len = len(cleaned_gen_text.encode("utf-8"))
+            gen_text_len = len(gen_text.encode("utf-8"))
             duration = ref_audio_len + int(ref_audio_len / ref_text_len * gen_text_len / local_speed)
-
-        # inference
         with torch.inference_mode():
             generated, _ = model_obj.sample(
                 cond=audio,
@@ -658,8 +518,7 @@ def infer_batch_process(
                 sway_sampling_coef=sway_sampling_coef,
             )
             del _
-
-            generated = generated.to(torch.float32)  # generated mel spectrogram
+            generated = generated.to(torch.float32)
             generated = generated[:, ref_audio_len:, :]
             generated = generated.permute(0, 2, 1)
             if mel_spec_type == "vocos":
@@ -668,86 +527,54 @@ def infer_batch_process(
                 generated_wave = vocoder(generated)
             if rms < target_rms:
                 generated_wave = generated_wave * rms / target_rms
-
-            # wav -> numpy
             generated_wave = generated_wave.squeeze().cpu().numpy()
-            
-            # Apply silence segments to this batch if any
-            if silence_segments:
-                generated_wave = apply_silence_to_audio(
-                    generated_wave,
-                    silence_segments,
-                    sample_rate=target_sample_rate,
-                    text_length=len(cleaned_gen_text)
-                )
-
-            if streaming:
-                for j in range(0, len(generated_wave), chunk_size):
-                    yield generated_wave[j : j + chunk_size], target_sample_rate
-            else:
-                generated_cpu = generated[0].cpu().numpy()
-                del generated
-                yield generated_wave, generated_cpu
-
-    if streaming:
-        for gen_text in progress.tqdm(gen_text_batches) if progress is not None else gen_text_batches:
-            for chunk in process_batch(gen_text):
-                yield chunk
-    else:
-        with ThreadPoolExecutor() as executor:
-            futures = [executor.submit(process_batch, gen_text) for gen_text in gen_text_batches]
-            for future in progress.tqdm(futures) if progress is not None else futures:
-                result = future.result()
-                if result:
-                    generated_wave, generated_mel_spec = next(result)
-                    generated_waves.append(generated_wave)
-                    spectrograms.append(generated_mel_spec)
-
-        if generated_waves:
-            if cross_fade_duration <= 0:
-                # Simply concatenate
-                final_wave = np.concatenate(generated_waves)
-            else:
-                # Combine all generated waves with cross-fading
-                final_wave = generated_waves[0]
-                for i in range(1, len(generated_waves)):
-                    prev_wave = final_wave
-                    next_wave = generated_waves[i]
-
-                    # Calculate cross-fade samples, ensuring it does not exceed wave lengths
-                    cross_fade_samples = int(cross_fade_duration * target_sample_rate)
-                    cross_fade_samples = min(cross_fade_samples, len(prev_wave), len(next_wave))
-
-                    if cross_fade_samples <= 0:
-                        # No overlap possible, concatenate
-                        final_wave = np.concatenate([prev_wave, next_wave])
-                        continue
-
-                    # Overlapping parts
-                    prev_overlap = prev_wave[-cross_fade_samples:]
-                    next_overlap = next_wave[:cross_fade_samples]
-
-                    # Fade out and fade in
-                    fade_out = np.linspace(1, 0, cross_fade_samples)
-                    fade_in = np.linspace(0, 1, cross_fade_samples)
-
-                    # Cross-faded overlap
-                    cross_faded_overlap = prev_overlap * fade_out + next_overlap * fade_in
-
-                    # Combine
-                    new_wave = np.concatenate(
-                        [prev_wave[:-cross_fade_samples], cross_faded_overlap, next_wave[cross_fade_samples:]]
-                    )
-
-                    final_wave = new_wave
-
-            # Create a combined spectrogram
-            combined_spectrogram = np.concatenate(spectrograms, axis=1)
-
-            yield final_wave, target_sample_rate, combined_spectrogram
-
+            generated_cpu = generated[0].cpu().numpy()
+            del generated
+            return generated_wave, generated_cpu
+    for typ, val in (progress.tqdm(segments) if progress is not None else segments):
+        if typ == "text":
+            result = process_batch_text(val)
+            if result:
+                generated_wave, generated_mel_spec = result
+                generated_waves.append(generated_wave)
+                spectrograms.append(generated_mel_spec)
+        elif typ == "silence":
+            # Sinh đoạn silence
+            silence_samples = int(val * target_sample_rate / 1000)
+            generated_wave = np.zeros(silence_samples, dtype=np.float32)
+            generated_waves.append(generated_wave)
+            # Spectrogram cho silence: thêm mảng 0 với shape phù hợp
+            if spectrograms:
+                sil_shape = list(spectrograms[-1].shape)
+                sil_shape[1] = max(1, silence_samples // hop_length)
+                generated_mel_spec = np.zeros(sil_shape, dtype=np.float32)
+                spectrograms.append(generated_mel_spec)
+    if generated_waves:
+        if cross_fade_duration <= 0:
+            final_wave = np.concatenate(generated_waves)
         else:
-            yield None, target_sample_rate, None
+            final_wave = generated_waves[0]
+            for i in range(1, len(generated_waves)):
+                prev_wave = final_wave
+                next_wave = generated_waves[i]
+                cross_fade_samples = int(cross_fade_duration * target_sample_rate)
+                cross_fade_samples = min(cross_fade_samples, len(prev_wave), len(next_wave))
+                if cross_fade_samples <= 0 or (segments[i][0] == "silence" or segments[i-1][0] == "silence"):
+                    final_wave = np.concatenate([prev_wave, next_wave])
+                    continue
+                prev_overlap = prev_wave[-cross_fade_samples:]
+                next_overlap = next_wave[:cross_fade_samples]
+                fade_out = np.linspace(1, 0, cross_fade_samples)
+                fade_in = np.linspace(0, 1, cross_fade_samples)
+                cross_faded_overlap = prev_overlap * fade_out + next_overlap * fade_in
+                new_wave = np.concatenate(
+                    [prev_wave[:-cross_fade_samples], cross_faded_overlap, next_wave[cross_fade_samples:]]
+                )
+                final_wave = new_wave
+        combined_spectrogram = np.concatenate(spectrograms, axis=1) if spectrograms else None
+        yield final_wave, target_sample_rate, combined_spectrogram
+    else:
+        yield None, target_sample_rate, None
 
 
 # remove silence from generated wav
@@ -774,24 +601,3 @@ def save_spectrogram(spectrogram, path):
     plt.colorbar()
     plt.savefig(path)
     plt.close()
-
-def replace_silence_with_placeholders(text):
-    """
-    Thay thế tất cả silent token <<<sil#...>>> bằng placeholder __SIL0__, __SIL1__, ...
-    Trả về text mới, list silent token, list placeholder
-    """
-    pattern = r'<<<sil#\d+>>>'
-    silences = re.findall(pattern, text)
-    placeholders = [f"__SIL{i}__" for i in range(len(silences))]
-    text_with_ph = text
-    for sil, ph in zip(silences, placeholders):
-        text_with_ph = text_with_ph.replace(sil, ph, 1)
-    return text_with_ph, silences, placeholders
-
-def restore_silence_from_placeholders(text, silences, placeholders):
-    """
-    Thay thế các placeholder __SIL0__, __SIL1__, ... về lại silent token gốc
-    """
-    for ph, sil in zip(placeholders, silences):
-        text = text.replace(ph, sil)
-    return text
