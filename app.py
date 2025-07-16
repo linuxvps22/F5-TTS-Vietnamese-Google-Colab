@@ -130,14 +130,15 @@ with gr.Blocks(theme=gr.themes.Soft()) as demo:
         output_spectrogram = gr.Image(label="📊 Spectrogram")
     
     model_limitations = gr.Textbox(
-        value="""1. This model may not perform well with numerical characters, dates, special characters, etc. => A text normalization module is needed.
-2. The rhythm of some generated audios may be inconsistent or choppy => It is recommended to select clearly pronounced sample audios with minimal pauses for better synthesis quality.
-3. Default, reference audio text uses the pho-whisper-medium model, which may not always accurately recognize Vietnamese, resulting in poor voice synthesis quality.
-4. Inference with overly long paragraphs may produce poor results.""", 
-        label="❗ Model Limitations",
+        value="""1. Mô hình này có thể không hoạt động tốt với các ký tự số, ngày tháng, ký tự đặc biệt, v.v. => Cần có một mô-đun chuẩn hóa văn bản. ( Đã cập nhật với vinorm TTSnorm)
+    2. Nhịp điệu của một số đoạn âm thanh được tạo ra có thể không nhất quán hoặc bị giật => Nên chọn các đoạn âm thanh mẫu phát âm rõ ràng và ít ngắt quãng để có chất lượng tổng hợp tốt hơn.
+    3. Mặc định, văn bản âm thanh tham chiếu sử dụng mô hình pho-whisper-medium, mô hình này có thể không nhận diện chính xác tiếng Việt, dẫn đến chất lượng tổng hợp giọng nói kém. ( Đã cập nhật với phần điền tay cho văn bản tham chiếu)
+    4. Suy luận với các đoạn văn quá dài có thể cho kết quả kém. ( Đã cập nhật với thực thi trên Colab, khỏe hơn nên đã tăng giới hạn lên 10000 từ)""", 
+        label="❗ Giới hạn của Mô hình",
         lines=4,
         interactive=False
     )
+
 
     btn_synthesize.click(infer_tts, inputs=[ref_audio, gen_text, ref_text, speed], outputs=[output_audio, output_spectrogram])
 
